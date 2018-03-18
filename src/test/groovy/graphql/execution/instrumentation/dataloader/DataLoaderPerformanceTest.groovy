@@ -164,7 +164,7 @@ class DataLoaderPerformanceTest extends Specification {
         //
         //  eg 1 for shops-->departments and one for departments --> products
         BatchCompareDataFetchers.departmentsForShopsBatchLoaderCounter.get() == 1
-        BatchCompareDataFetchers.productsForDepartmentsBatchLoaderCounter.get() == 3
+        BatchCompareDataFetchers.productsForDepartmentsBatchLoaderCounter.get() == 1
     }
 
     def "970 ensure data loader is performant for multiple field with lists"() {
