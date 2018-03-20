@@ -128,11 +128,14 @@ public class DataLoaderDispatcherInstrumentation extends SimpleInstrumentation {
         }
 
         private boolean thereAreOutstandingFieldFetches(int startLevel) {
-            if (startLevel < 0) {
-                return false;
+            while (startLevel >= 0) {
+                int count = getOutstandingFieldFetches(startLevel);
+                if (count > 0) {
+                    return true;
+                }
+                startLevel--;
             }
-            int count = getOutstandingFieldFetches(startLevel);
-            return count > 0 || thereAreOutstandingFieldFetches(--startLevel);
+            return false;
         }
 
         @Override
