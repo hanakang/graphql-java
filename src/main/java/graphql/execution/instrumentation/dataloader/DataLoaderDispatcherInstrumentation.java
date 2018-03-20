@@ -23,9 +23,12 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 import static graphql.execution.instrumentation.SimpleInstrumentationContext.whenDispatched;
 
@@ -76,6 +79,7 @@ public class DataLoaderDispatcherInstrumentation extends SimpleInstrumentation {
     private static class CallStack implements InstrumentationState {
         private boolean aggressivelyBatching = true;
         private final Deque<Boolean> stack = new ArrayDeque<>();
+        private final Map<Integer, Integer> outstandingFieldFetchCounts = new HashMap<>();
 
         private boolean isAggressivelyBatching() {
             return aggressivelyBatching;
@@ -109,6 +113,28 @@ public class DataLoaderDispatcherInstrumentation extends SimpleInstrumentation {
             }
         }
 
+        private void setOutstandingFieldFetches(int level, int count) {
+            outstandingFieldFetchCounts.put(level, count);
+        }
+
+        private int decrementOutstandingFieldFetches(int level) {
+            int newCount = outstandingFieldFetchCounts.getOrDefault(level, 1) - 1;
+            outstandingFieldFetchCounts.put(level, newCount);
+            return newCount;
+        }
+
+        private int getOutstandingFieldFetches(int level) {
+            return outstandingFieldFetchCounts.getOrDefault(level, 0);
+        }
+
+        private boolean thereAreOutstandingFieldFetches(int startLevel) {
+            if (startLevel < 0) {
+                return false;
+            }
+            int count = getOutstandingFieldFetches(startLevel);
+            return count > 0 || thereAreOutstandingFieldFetches(--startLevel);
+        }
+
         @Override
         public String toString() {
             return "isInList=" + isInList();
@@ -123,6 +149,16 @@ public class DataLoaderDispatcherInstrumentation extends SimpleInstrumentation {
 
     private void dispatch() {
         log.debug("Dispatching data loaders ({})", dataLoaderRegistry.getKeys());
+
+        List<String> dlKeysWithData = dataLoaderRegistry.getKeys().stream().filter(key -> dataLoaderRegistry.getDataLoader(key).dispatchDepth() > 0).collect(Collectors.toList());
+        if (!dlKeysWithData.isEmpty()) {
+            System.out.println("\t\tDispatched!");
+        }
+        dlKeysWithData.forEach(key -> {
+            System.out.println(String.format("'%s' has %d depth", key, dataLoaderRegistry.getDataLoader(key).dispatchDepth()));
+        });
+
+        System.out.println("\n\n");
         dataLoaderRegistry.dispatchAll();
     }
 
@@ -130,7 +166,9 @@ public class DataLoaderDispatcherInstrumentation extends SimpleInstrumentation {
         if (executionStrategyParameters == null) {
             return true;
         }
-        if (executionStrategyParameters.getListSize() == 0) return true;
+        if (executionStrategyParameters.getListSize() == 0) {
+            return true;
+        }
         return executionStrategyParameters.getCurrentListIndex() + 1 == executionStrategyParameters.getListSize();
     }
 
@@ -140,7 +178,9 @@ public class DataLoaderDispatcherInstrumentation extends SimpleInstrumentation {
     }
 
     private void dispatchIfNeeded(CallStack callStack, ExecutionStrategyParameters executionStrategyParameters) {
-        if (isEndOfListOnAllLevels(executionStrategyParameters)) {
+        int level = executionStrategyParameters == null ? 0 : executionStrategyParameters.path().getLevel();
+        boolean outstandingDispatches = callStack.thereAreOutstandingFieldFetches(level);
+        if (isEndOfListOnAllLevels(executionStrategyParameters) && !outstandingDispatches) {
             dispatch();
         }
     }
@@ -175,16 +215,27 @@ public class DataLoaderDispatcherInstrumentation extends SimpleInstrumentation {
     @Override
     public InstrumentationContext<ExecutionResult> beginExecutionStrategy(InstrumentationExecutionStrategyParameters parameters) {
         CallStack callStack = parameters.getInstrumentationState();
+        int level = parameters.getExecutionStrategyParameters().path().getLevel() + 1; // +1 because we are looking forward
+        int fieldCount = parameters.getExecutionStrategyParameters().fields().size();
+        callStack.setOutstandingFieldFetches(level, fieldCount);
         return whenDispatched((result) -> dispatchIfNeeded(callStack, parameters.getExecutionStrategyParameters()));
     }
 
-    /*
-       When graphql-java enters a field list it re-cursively called the execution strategy again, which will cause an early flush
-       to the data loader - which is not efficient from a batch point of view.  We want to allow the list of field values
-       to bank up as promises and call dispatch when we are clear of a list value.
+    @Override
+    public InstrumentationContext<Object> beginFieldFetch(InstrumentationFieldFetchParameters parameters) {
+        CallStack callStack = parameters.getInstrumentationState();
+        int level = parameters.getEnvironment().getFieldTypeInfo().getPath().getLevel();
+        callStack.decrementOutstandingFieldFetches(level);
+        return super.beginFieldFetch(parameters);
+    }
 
-       https://github.com/graphql-java/graphql-java/issues/760
-     */
+    /*
+           When graphql-java enters a field list it re-cursively called the execution strategy again, which will cause an early flush
+           to the data loader - which is not efficient from a batch point of view.  We want to allow the list of field values
+           to bank up as promises and call dispatch when we are clear of a list value.
+
+           https://github.com/graphql-java/graphql-java/issues/760
+         */
     @Override
     public InstrumentationContext<ExecutionResult> beginFieldListComplete(InstrumentationFieldCompleteParameters parameters) {
         CallStack callStack = parameters.getInstrumentationState();

@@ -187,7 +187,7 @@ class DataLoaderPerformanceTest extends Specification {
         result.data == expectedExpensiveData
         //
         //  ideally 1 for shops-->departments and one for departments --> products but currently not the case
-        BatchCompareDataFetchers.departmentsForShopsBatchLoaderCounter.get() == 2
+        BatchCompareDataFetchers.departmentsForShopsBatchLoaderCounter.get() == 1
         BatchCompareDataFetchers.productsForDepartmentsBatchLoaderCounter.get() == 1
     }
 
